@@ -2,6 +2,7 @@
   "name": "ffmpeg-video-api",
   "version": "1.0.0",
   "description": "Video rendering API with Remotion",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node --expose-gc --max-old-space-size=400 server.js",
