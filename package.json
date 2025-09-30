@@ -1,8 +1,19 @@
-"dependencies": {
-  "express": "^4.18.2",
-  "remotion": "^4.0.0"
-},
-"scripts": {
-  "start": "node server.js",
-  "render": "remotion render"
+{
+  "name": "ffmpeg-video-api",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "render": "remotion render"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "remotion": "^4.0.0"
+  },
+  "devDependencies": {
+    "@remotion/cli": "^3.6.0",
+    "@remotion/player": "^3.6.0",
+    "@remotion/renderer": "^3.6.0"
+  }
 }
