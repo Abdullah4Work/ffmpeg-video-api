@@ -1,6 +1,6 @@
 // server.js
 import express from "express";
-import { exec, spawn } from "child_process";
+import { exec, spawnSync, spawn } from "child_process";
 import path from "path";
 import fs from "fs";
 import multer from "multer";
@@ -13,7 +13,7 @@ app.use(express.json());
 const OUTPUT_DIR = path.join(".", "out");
 if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR);
 
-// multer يسمح بإستقبال ملفات أو حقول form-data
+// multer
 const upload = multer({ dest: OUTPUT_DIR });
 
 async function downloadToFile(url, destPath) {
@@ -24,42 +24,23 @@ async function downloadToFile(url, destPath) {
   return destPath;
 }
 
-// homepage
-app.get("/", (req, res) => {
-  res.send("✅ FFmpeg Video API is running...");
-});
+app.get("/", (req, res) => res.send("✅ FFmpeg Video API is running..."));
 
-/**
- * /convert:
- *  - يدعم إرسال imageUrl + audioUrl + captionsJson (أو captions كمصفوفة) عبر form-data أو JSON
- *  - إذا وجد captions => نفذ Remotion render باستخدام src/Video.tsx (مرر props.captions)
- *  - وإلا استخدم FFmpeg لدمج الصورة مع الصوت
- */
 app.post("/convert", upload.fields([{ name: "image" }, { name: "audio" }]), async (req, res) => {
   try {
-    // form-data fields or JSON body
     const body = Object.keys(req.body).length ? req.body : req.query;
 
-    // check files (multer)
     let imageFile = req.files && req.files.image && req.files.image[0];
     let audioFile = req.files && req.files.audio && req.files.audio[0];
 
-    // or URLs from fields
     const imageUrl = body.imageUrl || body.image_url || body.image;
     const audioUrl = body.audioUrl || body.audio_url || body.audio;
 
-    // captions may come as JSON-string under captions or captionsJson, or as an actual array
     let captions = body.captions || body.captionsJson || body.captionsjson || null;
     if (typeof captions === "string") {
-      try {
-        captions = JSON.parse(captions);
-      } catch (e) {
-        // ignore parse error - will be handled below
-        captions = null;
-      }
+      try { captions = JSON.parse(captions); } catch (e) { captions = null; }
     }
 
-    // If files not uploaded, download from URLs (if provided)
     const tempFilesToClean = [];
     if (!imageFile && imageUrl) {
       const ext = path.extname(new URL(imageUrl).pathname) || ".jpg";
@@ -76,23 +57,19 @@ app.post("/convert", upload.fields([{ name: "image" }, { name: "audio" }]), asyn
       tempFilesToClean.push(tmpAudioPath);
     }
 
-    // If captions present -> use Remotion render (to create captioned animated video)
+    // If captions exist -> use Remotion render
     if (captions && Array.isArray(captions) && captions.length > 0) {
-      // Build props to pass to Remotion
       const props = {
         audioUrl: audioUrl || (audioFile && `file://${audioFile.path}`) || null,
         imageUrl: imageUrl || (imageFile && `file://${imageFile.path}`) || null,
-        // normalize caption items: support {word,start,end} or {text,start,end}
         captions: captions.map((c) => ({
           start: Number(c.start),
           end: Number(c.end),
-          text: c.text || c.word || c.content || "",
+          text: c.text || c.word || c.caption || "",
         })),
       };
 
-      // validate
       if (!props.audioUrl || !props.imageUrl) {
-        // cleanup temporaries
         for (const f of tempFilesToClean) try { fs.unlinkSync(f); } catch (e) {}
         return res.status(400).json({ error: "audioUrl + imageUrl required for Remotion render" });
       }
@@ -100,31 +77,51 @@ app.post("/convert", upload.fields([{ name: "image" }, { name: "audio" }]), asyn
       const outName = `remotion_output_${Date.now()}.mp4`;
       const outPath = path.join(OUTPUT_DIR, outName);
 
-      // spawn npx remotion render ... --props '<json>'
+      // ---- حساب طول الصوت (ثواني) عبر ffprobe لنعرف عدد الإطارات الذي نحتاجه ----
+      let framesArg = null;
+      try {
+        // نفحص وجود ffprobe (جزء من ffmpeg) ثم نطلب مدته
+        const ffprobeCmd = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${props.audioUrl.startsWith("file://") ? props.audioUrl.replace("file://", "") : props.audioUrl}"`;
+        const probeResult = spawnSync("bash", ["-lc", ffprobeCmd], { encoding: "utf8", timeout: 20_000 });
+        if (probeResult.status === 0) {
+          const durSec = parseFloat((probeResult.stdout || "").trim());
+          if (!Number.isNaN(durSec) && durSec > 0) {
+            const fps = 30; // يتطابق مع composition في src/index.tsx (تأكّد أن الـ fps نفس القيمة هناك)
+            const lastFrame = Math.max(0, Math.ceil(durSec * fps) - 1);
+            framesArg = `0-${lastFrame}`;
+          }
+        }
+      } catch (e) {
+        // لا نكسر التنفيذ لو فشل probe — نترك Remotion يستخدم duration المركب
+        console.warn("ffprobe failed:", e?.message || e);
+        framesArg = null;
+      }
+
+      // نركّب الأمر: استخدم entry = src/index.tsx (الملف اللي فيه registerRoot)
       const propsStr = JSON.stringify(props);
       const args = [
         "remotion",
         "render",
-        "src/Video.tsx",
+        "src/index.tsx",
         "MyVideo",
         outPath,
         "--props",
         propsStr,
       ];
+      if (framesArg) {
+        args.push("--frames", framesArg);
+      }
 
       const proc = spawn("npx", args, { stdio: ["ignore", "pipe", "pipe"] });
 
       let stderr = "";
       proc.stdout.on("data", (d) => {
-        // optionally stream logs
+        // خيار: نبعت لوجز
         // console.log(d.toString());
       });
-      proc.stderr.on("data", (d) => {
-        stderr += d.toString();
-      });
+      proc.stderr.on("data", (d) => { stderr += d.toString(); });
 
       proc.on("close", (code) => {
-        // cleanup downloaded temps
         for (const f of tempFilesToClean) try { fs.unlinkSync(f); } catch (e) {}
         if (code !== 0) {
           console.error("Remotion render error:", stderr);
@@ -136,12 +133,11 @@ app.post("/convert", upload.fields([{ name: "image" }, { name: "audio" }]), asyn
         });
       });
 
-      return; // finished branch
+      return;
     }
 
-    // ELSE: fallback FFmpeg simple image+audio merge (existing behavior)
+    // ELSE: fallback FFmpeg simple image+audio merge
     if (!imageFile || !audioFile) {
-      // cleanup
       for (const f of tempFilesToClean) try { fs.unlinkSync(f); } catch (e) {}
       return res.status(400).json({ error: "Both image and audio required. Send as files or imageUrl/audioUrl." });
     }
@@ -150,9 +146,7 @@ app.post("/convert", upload.fields([{ name: "image" }, { name: "audio" }]), asyn
     const cmd = `ffmpeg -y -loop 1 -i "${imageFile.path}" -i "${audioFile.path}" -c:v libx264 -c:a aac -pix_fmt yuv420p -shortest "${outPath}"`;
 
     exec(cmd, (err, stdout, stderr) => {
-      // cleanup temps
       for (const f of tempFilesToClean) try { fs.unlinkSync(f); } catch (e) {}
-
       if (err) {
         console.error("FFmpeg error:", stderr || err);
         return res.status(500).json({ error: "FFmpeg processing failed", details: stderr || err.message });
@@ -168,8 +162,6 @@ app.post("/convert", upload.fields([{ name: "image" }, { name: "audio" }]), asyn
   }
 });
 
-// health
 app.get("/health", (req, res) => res.send("OK"));
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on ${PORT}`));
