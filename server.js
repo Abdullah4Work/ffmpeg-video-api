@@ -6,6 +6,11 @@ import fs from "fs";
 const app = express();
 app.use(express.json());
 
+// المسار الرئيسي (homepage)
+app.get("/", (req, res) => {
+  res.send("✅ FFmpeg Video API is running...");
+});
+
 app.post("/generate", async (req, res) => {
   const { audioUrl, images, duration } = req.body;
 
