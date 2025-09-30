@@ -1,204 +1,211 @@
-// src/Video.tsx
-import React from "react";
-import {
-  AbsoluteFill,
-  Audio,
-  Img,
-  Sequence,
-  useCurrentFrame,
-  useVideoConfig,
-  spring,
-  interpolate,
-} from "remotion";
+const express = require('express');
+const { bundle } = require('@remotion/bundler');
+const { renderMedia, selectComposition } = require('@remotion/renderer');
+const path = require('path');
+const fs = require('fs');
+const { getAudioDurationInSeconds } = require('@remotion/media-utils');
 
-type Caption = {
-  start: number; // seconds
-  end: number;   // seconds
-  text: string;
+const app = express();
+app.use(express.json({ limit: '10mb' })); // تقليل الحد
+
+const PORT = process.env.PORT || 10000;
+
+// تنظيف الملفات القديمة
+const cleanupOldFiles = () => {
+  const outDir = path.join(__dirname, 'out');
+  if (fs.existsSync(outDir)) {
+    const files = fs.readdirSync(outDir);
+    const now = Date.now();
+    files.forEach(file => {
+      if (file === '.gitkeep') return;
+      const filePath = path.join(outDir, file);
+      try {
+        const stats = fs.statSync(filePath);
+        const ageMinutes = (now - stats.mtimeMs) / 1000 / 60;
+        if (ageMinutes > 10) { // حذف بعد 10 دقائق
+          fs.unlinkSync(filePath);
+          console.log(`✓ Deleted: ${file}`);
+        }
+      } catch (e) {
+        console.error(`Error cleaning ${file}:`, e);
+      }
+    });
+  }
 };
 
-export const MyVideo: React.FC<{
-  audioUrl: string;
-  imageUrl: string;
-  captions?: Caption[];      // accepts array from server (we normalize server-side too)
-  captionText?: string;
-}> = ({ audioUrl, imageUrl, captions, captionText }) => {
-  const frame = useCurrentFrame();
-  const { fps, durationInFrames } = useVideoConfig();
+// Health check
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    message: 'Remotion Video API',
+    memory: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`
+  });
+});
 
-  const secToFrame = (s: number) => Math.round(s * fps);
+app.post('/convert', async (req, res) => {
+  const startTime = Date.now();
+  const { format = 'mp4', imageUrl, audioUrl, captions = [] } = req.body;
 
-  const buildAutoCaptions = (text: string, audioSeconds: number) => {
-    const segments = text
-      .split(/(?<=[.؟!?]|,)\s+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    if (segments.length === 0) return [];
-    const total = segments.length;
-    let cursor = 0;
-    return segments.map((seg) => {
-      const segDuration = audioSeconds / total;
-      const start = cursor;
-      const end = cursor + segDuration;
-      cursor = end;
-      return { start, end, text: seg };
-    });
-  };
-
-  const audioSeconds = durationInFrames / fps;
-
-  // Normalize incoming captions (allow {word,start,end} or {text,start,end})
-  let effectiveCaptions: Caption[] = [];
-  if (captions && captions.length > 0) {
-    effectiveCaptions = captions.map((c) => ({
-      start: Number((c as any).start || 0),
-      end: Number((c as any).end || ((c as any).start || 0) + 1),
-      text: (c as any).text || (c as any).word || (c as any).caption || "",
-    }));
-  } else if (captionText) {
-    effectiveCaptions = buildAutoCaptions(captionText, audioSeconds);
-  } else {
-    effectiveCaptions = [];
+  if (!imageUrl || !audioUrl) {
+    return res.status(400).json({ error: 'imageUrl and audioUrl required' });
   }
 
-  // Image subtle motion
-  const imageScaleDriver = spring({
-    fps,
-    frame,
-    config: { damping: 12, stiffness: 80 },
-  });
-  const breathing = 1 + Math.sin(frame * 0.02) * 0.015;
-  const imageScale = 1 + imageScaleDriver * 0.04;
-  const finalScale = imageScale * breathing;
+  console.log('🎬 Starting render...');
+  console.log(`📊 Memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
 
-  return (
-    <AbsoluteFill style={{ backgroundColor: "black" }}>
-      <AbsoluteFill style={{ overflow: "hidden" }}>
-        <Img
-          src={imageUrl}
-          style={{
-            width: "120%",
-            height: "120%",
-            objectFit: "cover",
-            transform: `scale(${finalScale})`,
-            transition: "transform 200ms linear",
-            position: "absolute",
-            left: "-10%",
-            top: "-10%",
-            filter: "contrast(1) saturate(1.05)",
-          }}
-        />
-        <div
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-            background:
-              "linear-gradient(180deg, rgba(0,0,0,0.15) 0%, rgba(0,0,0,0.35) 60%, rgba(0,0,0,0.6) 100%)",
-            pointerEvents: "none",
-          }}
-        />
-      </AbsoluteFill>
+  const outputFileName = `video-${Date.now()}.${format}`;
+  const outputPath = path.join(__dirname, 'out', outputFileName);
 
-      <Audio src={audioUrl} />
+  // تنظيف قبل البدء
+  cleanupOldFiles();
 
-      <AbsoluteFill
-        style={{
-          justifyContent: "flex-end",
-          alignItems: "center",
-          paddingBottom: 80,
-          pointerEvents: "none",
-        }}
-      >
-        <div
-          style={{
-            width: "90%",
-            maxWidth: 1024,
-            display: "flex",
-            flexDirection: "column",
-            gap: 12,
-            alignItems: "center",
-          }}
-        >
-          {effectiveCaptions.map((c, idx) => {
-            const startF = secToFrame(c.start);
-            const durF = Math.max(1, secToFrame(c.end - c.start));
-            return (
-              <Sequence key={idx} from={startF} durationInFrames={durF}>
-                <CaptionItem text={c.text} durationF={durF} />
-              </Sequence>
-            );
-          })}
-        </div>
-      </AbsoluteFill>
-    </AbsoluteFill>
-  );
+  // فورس garbage collection
+  if (global.gc) global.gc();
+
+  try {
+    // الحصول على مدة الأوديو
+    const audioDuration = await getAudioDurationInSeconds(audioUrl);
+    const durationInFrames = Math.ceil(audioDuration * 30);
+
+    console.log(`⏱️  Duration: ${audioDuration.toFixed(2)}s (${durationInFrames} frames)`);
+
+    // Bundle
+    console.log('📦 Bundling...');
+    const bundleLocation = await bundle({
+      entryPoint: path.join(__dirname, 'src/index.tsx'),
+      webpackOverride: (config) => {
+        config.resolve = {
+          ...config.resolve,
+          extensions: ['.tsx', '.ts', '.js', '.jsx'],
+        };
+        // تقليل استخدام الذاكرة في webpack
+        config.optimization = {
+          ...config.optimization,
+          minimize: false, // إيقاف الـ minification لتوفير ذاكرة
+        };
+        return config;
+      },
+    });
+
+    console.log('✓ Bundle ready');
+
+    // Select composition
+    const composition = await selectComposition({
+      serveUrl: bundleLocation,
+      id: 'MyVideo',
+      inputProps: { imageUrl, audioUrl, captions },
+    });
+
+    console.log('✓ Composition selected');
+
+    // Render بإعدادات موفرة للذاكرة
+    await renderMedia({
+      composition: {
+        ...composition,
+        durationInFrames,
+        fps: 30,
+        width: 1080,
+        height: 1920,
+      },
+      serveUrl: bundleLocation,
+      codec: 'h264',
+      outputLocation: outputPath,
+      inputProps: { imageUrl, audioUrl, captions },
+      
+      // ⚡ الإعدادات الرئيسية لتوفير الذاكرة
+      concurrency: 1, // معالجة فريم واحد في نفس الوقت
+      disallowParallelEncoding: true, // إيقاف الـ parallel encoding
+      imageFormat: 'jpeg', // JPEG أخف من PNG
+      jpegQuality: 80, // تقليل الجودة قليلاً
+      
+      // إعدادات الفيديو
+      crf: 23,
+      pixelFormat: 'yuv420p',
+      
+      // تقليل حجم الكاش
+      offthreadVideoCacheSizeInBytes: 50 * 1024 * 1024, // 50MB فقط
+      
+      // إعدادات المتصفح
+      chromiumOptions: {
+        enableMultiProcessOnLinux: false, // استخدام process واحد
+        gl: 'swangle', // أخف renderer
+        ignoreCertificateErrors: true,
+      },
+      
+      // تقليل timeout
+      timeoutInMilliseconds: 180000, // 3 دقائق
+      
+      // لوقينق أقل
+      logLevel: 'info',
+      
+      onProgress: ({ progress, renderedFrames, encodedFrames }) => {
+        const percent = Math.floor(progress * 100);
+        if (percent % 5 === 0) { // كل 5%
+          const mem = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+          console.log(`⏳ ${percent}% | Rendered: ${renderedFrames} | Encoded: ${encodedFrames} | RAM: ${mem}MB`);
+          
+          // garbage collection كل فترة
+          if (global.gc && percent % 20 === 0) {
+            global.gc();
+          }
+        }
+      },
+      
+      onStart: ({ frameCount }) => {
+        console.log(`🎥 Rendering ${frameCount} frames...`);
+      },
+    });
+
+    const renderTime = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`✅ Render complete in ${renderTime}s`);
+    console.log(`📊 Final memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
+
+    // إرسال الملف
+    res.download(outputPath, outputFileName, (err) => {
+      if (err) {
+        console.error('❌ Download error:', err);
+      }
+      // حذف الملف بعد الإرسال
+      setTimeout(() => {
+        if (fs.existsSync(outputPath)) {
+          fs.unlinkSync(outputPath);
+          console.log('🗑️  Deleted:', outputFileName);
+        }
+        // تنظيف نهائي
+        if (global.gc) global.gc();
+      }, 3000);
+    });
+
+  } catch (error) {
+    console.error('❌ Render error:', error.message);
+    res.status(500).json({ 
+      error: 'Render failed', 
+      message: error.message,
+    });
+    
+    // تنظيف عند الخطأ
+    if (fs.existsSync(outputPath)) {
+      fs.unlinkSync(outputPath);
+    }
+    if (global.gc) global.gc();
+  }
+});
+
+// Graceful shutdown
+const shutdown = () => {
+  console.log('🛑 Shutting down...');
+  cleanupOldFiles();
+  process.exit(0);
 };
 
-const CaptionItem: React.FC<{ text: string; durationF: number }> = ({ text, durationF }) => {
-  const frame = useCurrentFrame(); // local frame inside Sequence
-  const entry = spring({ frame, fps: 30, config: { damping: 10, stiffness: 120 } });
-  const pop = interpolate(entry, [0, 1], [0.92, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const progress = Math.max(0, Math.min(1, frame / Math.max(1, durationF)));
-  const highlightX = -30 + progress * 160;
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
-  const baseTextStyle: React.CSSProperties = {
-    fontFamily: "Inter, Arial, sans-serif",
-    fontWeight: 700,
-    fontSize: 48,
-    lineHeight: "1.1",
-    color: "#fff",
-    textAlign: "center",
-    padding: "16px 28px",
-    borderRadius: 12,
-    position: "relative",
-    transform: `scale(${pop})`,
-    willChange: "transform",
-    textShadow: "0 6px 20px rgba(0,0,0,0.6), 0 2px 6px rgba(0,0,0,0.4)",
-    background: "linear-gradient(90deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02))",
-    backdropFilter: "blur(6px)",
-  };
+// تنظيف دوري كل 5 دقائق
+setInterval(cleanupOldFiles, 5 * 60 * 1000);
 
-  const highlightStripeStyle: React.CSSProperties = {
-    position: "absolute",
-    left: `${highlightX}%`,
-    top: 0,
-    bottom: 0,
-    width: "28%",
-    transform: "skewX(-18deg)",
-    background:
-      "linear-gradient(90deg, rgba(255,255,255,0.0) 0%, rgba(255,255,255,0.85) 50%, rgba(255,255,255,0.0) 100%)",
-    filter: "blur(10px)",
-    mixBlendMode: "screen",
-    pointerEvents: "none",
-    transition: "left 0.05s linear",
-  };
-
-  const glowOpacity = 0.25 + 0.75 * Math.sin(progress * Math.PI);
-  const glowStyle: React.CSSProperties = {
-    position: "absolute",
-    left: -6,
-    right: -6,
-    top: -6,
-    bottom: -6,
-    borderRadius: 14,
-    boxShadow: `0 0 40px rgba(255,255,255,${glowOpacity})`,
-    opacity: glowOpacity,
-    pointerEvents: "none",
-    mixBlendMode: "screen",
-  };
-
-  return (
-    <div style={{ width: "100%", display: "flex", justifyContent: "center" }}>
-      <div style={{ position: "relative", width: "100%", maxWidth: 900 }}>
-        <div style={baseTextStyle}>
-          <div style={{ position: "relative", zIndex: 2 }}>{text}</div>
-          <div style={highlightStripeStyle} />
-          <div style={glowStyle} />
-        </div>
-      </div>
-    </div>
-  );
-};
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📊 Initial memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
+  cleanupOldFiles();
+});
