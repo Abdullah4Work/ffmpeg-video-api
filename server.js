@@ -3,7 +3,7 @@ import { exec } from "child_process";
 import path from "path";
 import fs from "fs";
 import { renderMedia } from "@remotion/cli";
-import { MyVideo } from "./src/Video"; // تأكد أن عندك ملف Video.js في src
+import { MyVideo } from "./src/Video"; // تأكد أن عندك ملف Video.tsx في src
 
 const app = express();
 app.use(express.json());
@@ -13,7 +13,7 @@ app.get("/", (req, res) => {
   res.send("✅ FFmpeg Video API is running...");
 });
 
-// FFmpeg: دمج صور مع صوت
+// FFmpeg: دمج صور متعددة مع صوت
 app.post("/generate", async (req, res) => {
   const { audioUrl, images, duration } = req.body;
 
@@ -37,7 +37,7 @@ app.post("/generate", async (req, res) => {
   });
 });
 
-// Remotion: دمج صورة مع صوت + كابشن
+// Remotion: دمج صورة واحدة مع صوت + كابشن
 app.post("/render-video", async (req, res) => {
   const { audioUrl, imageUrl, caption, outputName } = req.body;
 
