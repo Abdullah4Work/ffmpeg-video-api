@@ -1,8 +1,11 @@
+@@ -1,4 +1,22 @@
+import { registerRoot } from "remotion";
 // src/index.tsx
 import React from "react";
 import { registerRoot, Composition, RemotionRoot } from "remotion";
 import { MyVideo } from "./Video";
 
+registerRoot(() => <MyVideo audioUrl="" imageUrl="" captions="" />);
 const Root = () => {
   return (
     <RemotionRoot>
