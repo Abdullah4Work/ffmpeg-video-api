@@ -5,7 +5,7 @@ import React from "react";
 import { registerRoot, Composition, RemotionRoot } from "remotion";
 import { MyVideo } from "./Video";
 
-registerRoot(() => <MyVideo audioUrl="" imageUrl="" captions="" />);
+registerRoot(() => <MyVideo audioUrl="" imageUrl="" caption="" />);
 const Root = () => {
   return (
     <RemotionRoot>
